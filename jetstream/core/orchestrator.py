@@ -92,6 +92,7 @@ import jax
 from jetstream.core.proto import jetstream_pb2
 from jetstream.core.proto import jetstream_pb2_grpc
 from jetstream.core.utils import async_multifuture
+from jetstream.core.utils import utils
 from jetstream.engine import engine_api
 import numpy as np
 
@@ -437,7 +438,8 @@ class Driver:
     metadata = prefill_engine.get_tokenizer()
     tokenizer = prefill_engine.build_tokenizer(metadata)
     logging.info("---------Prefill params %d loaded.---------", idx)
-
+    utils.get_hbm_memory_stats("Starting prefill thread")
+    jax.profiler.start_trace("/tmp/tensorboard")
     while self.live:
       my_transfer_backlog = self._transfer_backlogs[idx]
       # The prefill thread can just sleep until it has work to do.
@@ -467,6 +469,9 @@ class Driver:
           true_length=true_length,
       )
       request.prefill_result = prefill_result
+      # jax.block_until_ready(request.prefill_result)
+      utils.debug_kv_cache(request.prefill_result)
+      utils.get_hbm_memory_stats(f"prefill queue size: {self._prefill_backlog.qsize()}")
       # Once prefill is complete, place it on the generation queue and block if
       # full.
       my_transfer_backlog.put(request, block=True)
@@ -477,6 +482,7 @@ class Driver:
       )
       del prefill_result
       del request
+    jax.profiler.stop_trace()
 
   def _transfer_thread(self, idx: int):
     """Transfers the kv cache on an active request to the least full
