@@ -140,6 +140,9 @@ class ActiveRequest:
   generate_timestep_added: Optional[int] = None
   is_client_side_tokenization: Optional[bool] = False
 
+  ########################### Accessory Information ############################
+  creation_time: Optional[float] = None
+
   def enqueue_samples(self, generated_samples: list[ReturnSample]):
     """Adds the generated sample(s) to return channel for current step.
 
@@ -253,6 +256,9 @@ class Driver:
     if self._metrics_collector:
       self._metrics_collector.get_prefill_backlog_metric().set_function(
           lambda: float(self._prefill_backlog.qsize())
+      )
+      self._metrics_collector.get_average_tpot_metric().set_function(
+          lambda: self._metrics_collector.tpot_metrics_collector.average()
       )
 
     # Stage 2
@@ -722,6 +728,12 @@ class Driver:
             request.enqueue_samples(results)
             if request.complete.all():
               request.return_channel.close()
+              time_per_output_token = (
+                  time.time() - request.creation_time
+              ) / generate_timestep_added
+              self._metrics_collector.tpot_metrics_collector.put(
+                  time_per_output_token
+              )
               # Place the slot back on the free queue.
               my_live_requests[slot] = None
               my_slots.put(slot, block=False)  # This should always have space.
@@ -838,6 +850,7 @@ class LLMOrchestrator(jetstream_pb2_grpc.OrchestratorServicer):
         prefill_content=prefill_content,
         is_client_side_tokenization=is_client_side_tokenization,
         return_channel=return_channel,
+        creation_time=time.time(),
     )
     # The first stage is being prefilled, all other stages are handled
     # inside the driver (transfer, generate*N, detokenize).
