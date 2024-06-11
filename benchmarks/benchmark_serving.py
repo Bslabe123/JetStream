@@ -227,7 +227,7 @@ def tokenize_dataset(
   prompt_token_ids = []
   outputs_token_ids = []
   for prompt, output, idx in dataset:
-    prompts.append(prompt)
+    prompts.append(prompt + " " + prompt)
     outputs.append(output)
     indices.append(idx)
     prompt_token_ids.append(tokenizer.encode(prompt))
