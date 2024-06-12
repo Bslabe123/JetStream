@@ -276,7 +276,7 @@ def filter_dataset(
       # This is because TGI causes errors when the input or output length
       # is too short.
       continue
-    if prompt_len > 1024 or prompt_len + output_len > 2048:
+    if prompt_len > 2048 or prompt_len + output_len > 4096:
       # Prune too long sequences.
       continue
     request = InputRequest(
