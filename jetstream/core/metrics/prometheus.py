@@ -53,12 +53,12 @@ class JetstreamMetricsCollector:
 
   def get_prefill_backlog_metric(self):
     return self._prefill_backlog.labels(id=self._id)
-  
+
   def get_transfer_backlog_metric(self, idx: int):
-    return self._transfer_backlog.labels(id=self._id)
-  
+    return self._transfer_backlog.labels(id=self._id, idx=idx)
+
   def get_generate_backlog_metric(self, idx: int):
-    return self._generate_backlog.labels(id=self._id)
+    return self._generate_backlog.labels(id=self._id, idx=idx)
 
   def get_slots_used_percentage_metric(self, idx: int):
     return self._slots_used_percentage.labels(id=self._id, idx=idx)
