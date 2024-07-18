@@ -13,5 +13,6 @@ COPY  JetStream ./JetStream
 COPY  maxtext ./maxtext
 
 RUN pip install ./JetStream
+RUN pip install -r ./maxtext/requirements.txt
 
 ENTRYPOINT ["bash"]

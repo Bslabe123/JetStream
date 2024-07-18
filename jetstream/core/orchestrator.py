@@ -133,8 +133,8 @@ class ActiveRequest:
   complete: Optional[np.ndarray] = None
   prefill_result: Any = None
   #################### Information relevant for prefill ########################
-  history_path: Optional[str] = None
   prefill_content: Optional[str | list[int]] = None
+  padded_token_length: Optional[int] = None
   ################## Information relevant for detokenization ###################
   # Which generate step this was added at.
   generate_timestep_added: Optional[int] = None
@@ -486,29 +486,44 @@ class Driver:
       my_transfer_backlog = self._transfer_backlogs[idx]
       # The prefill thread can just sleep until it has work to do.
       request = self._prefill_backlog.get(block=True)
+      request_start_time = time.perf_counter()
 
       if request is None:
         break
-      is_bos = not bool(request.history_path)
+      is_bos = True
       logging.info(
           "Prefilling on prefill engine %d : prefill queue size, %d,"
-          " is_bos: %s, history: %s",
+          " is_bos: %s",
           idx,
           self._prefill_backlog.qsize(),
           is_bos,
-          request.history_path,
       )
       # Tokenize and padding the text or token input.
       padded_tokens, true_length = self._process_prefill_content(
           request, tokenizer, is_bos, prefill_engine.max_prefill_length
       )
+      if isinstance(prefill_engine, engine_api.JetStreamEngine):
+        request.padded_token_length = token_utils.take_nearest_length(
+            prefill_engine.prefill_buckets, true_length
+        )
+        prefill_engine.set_padded_token_length(request.padded_token_length)
+
       # Compute new kv cache for the prefill_content.
-      prefill_result = prefill_engine.prefill(
+      prefill_result, first_token = prefill_engine.prefill(
           params=prefill_params,
           padded_tokens=padded_tokens,
           true_length=true_length,
       )
+
       request.prefill_result = prefill_result
+
+      # put first token to detokenize queue
+      request.complete = np.zeros((prefill_engine.samples_per_slot,), np.bool_)
+      my_detokenize_backlog = self._detokenize_backlogs[idx]
+      my_detokenize_backlog.put(
+          (first_token, request, request_start_time), block=True
+      )
+
       # Once prefill is complete, place it on the generation queue and block if
       # full.
       my_transfer_backlog.put(request, block=True)
@@ -517,6 +532,7 @@ class Driver:
           idx,
           my_transfer_backlog.qsize(),
       )
+
       del prefill_result
       del request
 
@@ -661,6 +677,12 @@ class Driver:
             slot,
             generate_timestep,
         )
+
+        if isinstance(generate_engine, engine_api.JetStreamEngine):
+          generate_engine.set_padded_token_length(
+              new_request.padded_token_length
+          )
+
         decode_state = generate_engine.insert(
             new_request.prefill_result, decode_state, slot=slot
         )
@@ -714,7 +736,30 @@ class Driver:
       if data is None:
         break
       start_detokenize_time = time.time()
-      if isinstance(data[1], engine_api.ResultTokens):
+      # prefill first token
+      if isinstance(data[0], engine_api.ResultTokens):
+        request_first_token, request, request_start_time = data
+        request_first_token = request_first_token.convert_to_numpy()
+
+        results, complete = token_utils.process_result_tokens(
+            tokenizer=tokenizer,
+            slot=0,  # always 0 as prefill only run 1 sample
+            slot_max_length=request.max_tokens,
+            result_tokens=request_first_token,
+            is_client_side_tokenization=request.is_client_side_tokenization,
+            complete=request.complete,
+        )
+        request.complete = complete
+        # Return some output samples.
+        request.enqueue_samples(results)
+
+        first_token_return_time = time.perf_counter()
+        logging.info(
+            "TTFT duration: %fms",
+            (first_token_return_time - request_start_time) * 1000,
+        )
+      # generate step tokens
+      elif isinstance(data[1], engine_api.ResultTokens):
         # We want to detokenize them.
         generate_timestep_added, result_tokens = data
         # Disable attribute error because pytype doesn't know this
@@ -848,7 +893,6 @@ class LLMOrchestrator(jetstream_pb2_grpc.OrchestratorServicer):
     # Wrap request as an ActiveRequest.
     active_request = ActiveRequest(
         max_tokens=request.max_tokens,
-        history_path=request.session_cache,
         prefill_content=prefill_content,
         is_client_side_tokenization=is_client_side_tokenization,
         return_channel=return_channel,
